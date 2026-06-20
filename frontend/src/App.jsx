@@ -7,12 +7,12 @@ import { ShieldCheck, Activity, Settings, Bell, User } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 function App() {
-  // Try localhost if 127.0.0.1 fails, or vice versa
-  const wsUrl = window.location.hostname === 'localhost' 
-    ? 'ws://localhost:9000/ws/traffic' 
-    : 'ws://127.0.0.1:9000/ws/traffic';
+  // Dynamic Backend URL for Production (Render)
+  const backendBaseUrl = import.meta.env.VITE_BACKEND_URL || (window.location.hostname === 'localhost' ? '127.0.0.1:9000' : 'localhost:9000');
+  const wsUrl = `ws://${backendBaseUrl}/ws/traffic`;
+  const httpUrl = `http://${backendBaseUrl}/api/v1/metrics`;
     
-  const { logs, metrics } = useWebSocket(wsUrl);
+  const { logs, metrics } = useWebSocket(wsUrl, httpUrl);
   const [showPanic, setShowPanic] = useState(false);
 
   useEffect(() => {

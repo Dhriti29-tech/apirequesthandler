@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 
-export const useWebSocket = (url) => {
+export const useWebSocket = (url, httpUrl) => {
   const [logs, setLogs] = useState([]);
   const [metrics, setMetrics] = useState({
     totalRequests: 0,
@@ -14,7 +14,6 @@ export const useWebSocket = (url) => {
 
   const updateState = (data) => {
     setLogs((prev) => {
-      // Avoid duplicates if polling and websocket both work
       if (prev.some(l => l.timestamp === data.timestamp && l.path === data.path)) return prev;
       return [data, ...prev].slice(0, 50);
     });
@@ -22,8 +21,8 @@ export const useWebSocket = (url) => {
     setMetrics((prev) => {
       const newTotal = prev.totalRequests + 1;
       const newErrorCount = data.status_code >= 500 ? prev.errorCount + 1 : prev.errorCount;
-      const newLatencyBuffer = [...prev.latencyBuffer, data.latency_ms].slice(-20);
-      const newAvgLatency = newLatencyBuffer.reduce((a, b) => a + b, 0) / newLatencyBuffer.length;
+      const newLatencyBuffer = [...prev.latencyBuffer, data.latency_ms || 0].slice(-20);
+      const newAvgLatency = newLatencyBuffer.reduce((a, b) => a + b, 0) / Math.max(1, newLatencyBuffer.length);
 
       return {
         totalRequests: newTotal,
@@ -35,52 +34,47 @@ export const useWebSocket = (url) => {
   };
 
   useEffect(() => {
-    // 1. Try WebSocket
-    socketRef.current = new WebSocket(url);
-
-    socketRef.current.onmessage = (event) => {
-      if (pollingRef.current) clearInterval(pollingRef.current); // Stop polling if WS works
-      const data = JSON.parse(event.data);
-      updateState(data);
-    };
-
-    socketRef.current.onerror = () => {
-      console.warn("WebSocket failed, falling back to HTTP Polling...");
+    // 1. WebSocket Attempt
+    try {
+      socketRef.current = new WebSocket(url);
+      socketRef.current.onmessage = (event) => {
+        if (pollingRef.current) clearInterval(pollingRef.current);
+        const data = JSON.parse(event.data);
+        updateState(data);
+      };
+      socketRef.current.onerror = () => startPolling();
+    } catch (e) {
       startPolling();
-    };
+    }
 
-    // 2. Fallback: Start polling if no message in 3 seconds
+    // 2. Polling Fallback
     const startPolling = () => {
       if (pollingRef.current) return;
       pollingRef.current = setInterval(async () => {
         try {
-          const res = await fetch(url.replace('ws://', 'http://').replace('/ws/traffic', '/api/v1/metrics'));
+          const res = await fetch(httpUrl || url.replace('ws://', 'http://').replace('/ws/traffic', '/api/v1/metrics'));
           const data = await res.json();
-          // Update total metrics
           setMetrics(prev => ({
             ...prev,
             totalRequests: data.metrics.totalRequests,
             errorCount: data.metrics.errorCount,
             avgLatency: Math.round(data.metrics.avgLatency)
           }));
-          // Update logs
           setLogs(data.logs);
-        } catch (err) {
-          console.error("Polling error:", err);
-        }
-      }, 1000);
+        } catch (err) {}
+      }, 2000); // Polling every 2 seconds for production stability
     };
 
     const timeout = setTimeout(() => {
       if (logs.length === 0) startPolling();
-    }, 3000);
+    }, 4000);
 
     return () => {
       if (socketRef.current) socketRef.current.close();
       if (pollingRef.current) clearInterval(pollingRef.current);
       clearTimeout(timeout);
     };
-  }, [url]);
+  }, [url, httpUrl]);
 
   return { logs, metrics };
 };
